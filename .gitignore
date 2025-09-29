@@ -1,0 +1,24 @@
+# Virtual Environment Directory
+Minor2/
+.Minor2/  # Just in case it's created as a hidden folder
+
+# Environment variables
+.env
+*.env
+
+# Python specific cache and compiled files
+__pycache__/
+*.pyc
+*.pyd
+*.so
+
+# IDEs (optional but recommended)
+.vscode/ 
+
+# Testing/Coverage files
+.coverage
+htmlcov/
+
+# uploads
+uploads/
+college*docs/
