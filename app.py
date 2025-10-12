@@ -9,6 +9,7 @@ from utils.whisper_transcribe import transcribe_audio, retrival
 import ollama
 from dotenv import load_dotenv
 from google import genai
+import requests
 
 load_dotenv() 
 
@@ -63,63 +64,122 @@ def index():
         }
     return render_template('index.html')
 
+# @app.route('/upload', methods=['POST'])
+# def upload_file():
+#     if 'file' not in request.files:
+#         return jsonify({'error': 'No file provided'}), 400
+    
+#     file = request.files['file']
+#     if file.filename == '':
+#         return jsonify({'error': 'No file selected'}), 400
+    
+#     session_id = session.get('session_id')
+#     if not session_id:
+#         return jsonify({'error': 'Session expired'}), 400
+    
+#     # Set processing status
+#     chat_sessions[session_id]['is_processing'] = True
+#     processing_status[session_id] = "Processing your file..."
+    
+#     try:
+#         # Save the uploaded file
+#         if file.filename is None:
+#             chat_sessions[session_id]['is_processing'] = False
+#             return jsonify({'error': 'Invalid filename'}), 400
+        
+#         filename = secure_filename(file.filename)
+#         file_extension = filename.rsplit('.', 1)[1].lower()
+        
+#         if file_extension == 'pdf':
+#             filepath = os.path.join(app.config['UPLOAD_FOLDER_PDF'], filename)
+#             file.save(filepath)
+            
+#             # Process PDF in a separate thread
+#             thread = threading.Thread(
+#                 target=process_pdf_file, 
+#                 args=(session_id, filepath)
+#             )
+#             thread.start()
+            
+#         elif file_extension in ['mp4', 'mov', 'avi', 'mkv']:
+#             filepath = os.path.join(app.config['UPLOAD_FOLDER_VIDEO'], filename)
+#             file.save(filepath)
+            
+#             # Process video in a separate thread
+#             thread = threading.Thread(
+#                 target=process_video_file, 
+#                 args=(session_id, filepath)
+#             )
+#             thread.start()
+            
+#         else:
+#             chat_sessions[session_id]['is_processing'] = False
+#             return jsonify({'error': 'Unsupported file type'}), 400
+            
+#         return jsonify({'message': 'File uploaded successfully. Processing...'})
+        
+#     except Exception as e:
+#         chat_sessions[session_id]['is_processing'] = False
+#         return jsonify({'error': str(e)}), 500
+
+
+@app.route('/test', methods=['GET'])
+def test_endpoint():
+    return jsonify({'status': 'ok'})
+
 @app.route('/upload', methods=['POST'])
 def upload_file():
     if 'file' not in request.files:
         return jsonify({'error': 'No file provided'}), 400
+    else:
+        print(f"File part is present in the request: {request.files}")
     
     file = request.files['file']
-    if file.filename == '':
+    if not file or file.filename == '':
         return jsonify({'error': 'No file selected'}), 400
     
+    # Ensure session_id exists
     session_id = session.get('session_id')
     if not session_id:
-        return jsonify({'error': 'Session expired'}), 400
-    
-    # Set processing status
-    chat_sessions[session_id]['is_processing'] = True
-    processing_status[session_id] = "Processing your file..."
+        session_id = str(uuid.uuid4())
+        session['session_id'] = session_id
+        chat_sessions[session_id] = {'is_processing': False, 'messages': []}
     
     try:
-        # Save the uploaded file
-        if file.filename is None:
-            chat_sessions[session_id]['is_processing'] = False
-            return jsonify({'error': 'Invalid filename'}), 400
-        
         filename = secure_filename(file.filename)
-        file_extension = filename.rsplit('.', 1)[1].lower()
+        if '.' not in filename:
+            return jsonify({'error': 'File must have an extension'}), 400
         
+        file_extension = filename.rsplit('.', 1)[1].lower()
+
+        # Mark as processing
+        chat_sessions[session_id]['is_processing'] = True
+        processing_status[session_id] = "Processing your file..."
+
         if file_extension == 'pdf':
             filepath = os.path.join(app.config['UPLOAD_FOLDER_PDF'], filename)
+            os.makedirs(app.config['UPLOAD_FOLDER_PDF'], exist_ok=True)
             file.save(filepath)
-            
-            # Process PDF in a separate thread
-            thread = threading.Thread(
-                target=process_pdf_file, 
-                args=(session_id, filepath)
-            )
-            thread.start()
-            
+
+            threading.Thread(target=process_pdf_file, args=(session_id, filepath)).start()
+
         elif file_extension in ['mp4', 'mov', 'avi', 'mkv']:
             filepath = os.path.join(app.config['UPLOAD_FOLDER_VIDEO'], filename)
+            os.makedirs(app.config['UPLOAD_FOLDER_VIDEO'], exist_ok=True)
             file.save(filepath)
-            
-            # Process video in a separate thread
-            thread = threading.Thread(
-                target=process_video_file, 
-                args=(session_id, filepath)
-            )
-            thread.start()
-            
+
+            threading.Thread(target=process_video_file, args=(session_id, filepath)).start()
+
         else:
             chat_sessions[session_id]['is_processing'] = False
             return jsonify({'error': 'Unsupported file type'}), 400
-            
+
         return jsonify({'message': 'File uploaded successfully. Processing...'})
-        
+
     except Exception as e:
         chat_sessions[session_id]['is_processing'] = False
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'error': f'Upload failed: {str(e)}'}), 500
+
 
 def process_pdf_file(session_id, filepath):
     try:
@@ -221,20 +281,22 @@ def generate_answer(session_id, question):
         
         # Prepare prompt for the AI model with chat history
         prompt = f"""
-        You are a helpful RAG assistant. Answer the user's question using the provided extracted text as your primary source.
+        You are a friendly, expert educational assistant. Your primary goal is to help the user learn and understand the subject matter.
 
         Guidelines:
-        - Prioritize information from the extracted text
-        - Use conversation history for context when relevant  
+        - Read and properly analyse the `USER'S QUESTION`.
+        - Prioritize Extracted Context: Your answer MUST be based on the provided `EXTRACTED TEXT` and `CONVERSATION HISTORY`. If the context contains a direct answer, use it and cite the source if possible.
+        - The timestamps are in the format (start_time, end_time) in seconds, convert it to proper hh:mm:ss format if asked
+        - Go Beyond for Clarity: If the user asks for a simplification ("explain in easy English," "give an example") or asks a related general knowledge question that is not fully covered in the provided context, you may use your general knowledge to provide a helpful, simple, and complete answer.  
         - Be honest when information is insufficient or missing
         - Provide clear, helpful responses in a conversational tone
 
-        Previous conversation:
+        CONVERSATION HISTORY:
         {chat_history_str}
 
-        Question: {question}
+        USER'S QUESTION: {question}
 
-        Source material:
+        EXTRACTED TEXT:
         {retrived_text}
 
         Answer:"""
@@ -247,16 +309,39 @@ def generate_answer(session_id, question):
         #     f.write(str(extracted_text))
         # Get response from Ollama
         
+        #---------------------- For Local Ollama model
+        # response = ollama.chat(model='hf.co/unsloth/Qwen3-4B-Instruct-2507-GGUF:Q4_K_XL', messages=[
+        #     {'role': 'user', 'content': prompt}
+        # ], think=False)
+        # -------------------------------------------
+        
+        #---------------------- For Google Gemini model
         response = client.models.generate_content(
             model="gemini-2.5-flash",  # or another model name
             contents=prompt
         )
-        
-        # response = ollama.chat(model='hf.co/unsloth/Qwen3-4B-Instruct-2507-GGUF:Q4_K_XL', messages=[
-        #     {'role': 'user', 'content': prompt}
-        # ], think=False)
-        
         answer = response.text
+        # -------------------------------------------
+        
+        
+        #---------------------- For Remote Ollama model
+        # OLLAMA_SERVER = "http://10.51.122.75:11434"
+        # url = f"{OLLAMA_SERVER}/api/generate"
+        
+        # response = requests.post(
+        #     url, 
+        #     json={
+        #         "model": "gpt-oss:20b",
+        #         "prompt": prompt,
+        #         "stream": False
+        # })
+        
+        # data = response.json()
+        # think_answer = f"{data['thinking']} /n /n {data['response']}"
+        # answer = think_answer
+        # -------------------------------------------
+        
+        
         
         # Add AI response to chat history
         chat_sessions[session_id]['messages'].append({
