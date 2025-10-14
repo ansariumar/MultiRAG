@@ -129,56 +129,40 @@ def test_endpoint():
 
 @app.route('/upload', methods=['POST'])
 def upload_file():
-    if 'file' not in request.files:
-        return jsonify({'error': 'No file provided'}), 400
-    else:
-        print(f"File part is present in the request: {request.files}")
-    
-    file = request.files['file']
-    if not file or file.filename == '':
-        return jsonify({'error': 'No file selected'}), 400
-    
-    # Ensure session_id exists
-    session_id = session.get('session_id')
-    if not session_id:
-        session_id = str(uuid.uuid4())
-        session['session_id'] = session_id
-        chat_sessions[session_id] = {'is_processing': False, 'messages': []}
-    
     try:
-        filename = secure_filename(file.filename)
+        # Get the filename from the request body
+        filename = request.data.decode('utf-8')
+        if not filename:
+            return jsonify({'error': 'No filename provided'}), 400
+
+        # Ensure the filename is secure
+        filename = secure_filename(filename)
         if '.' not in filename:
-            return jsonify({'error': 'File must have an extension'}), 400
-        
+            return jsonify({'error': 'Invalid filename. File must have an extension.'}), 400
+
+        # Determine the file path based on the extension
         file_extension = filename.rsplit('.', 1)[1].lower()
-
-        # Mark as processing
-        chat_sessions[session_id]['is_processing'] = True
-        processing_status[session_id] = "Processing your file..."
-
         if file_extension == 'pdf':
-            filepath = os.path.join(app.config['UPLOAD_FOLDER_PDF'], filename)
-            os.makedirs(app.config['UPLOAD_FOLDER_PDF'], exist_ok=True)
-            file.save(filepath)
-
-            threading.Thread(target=process_pdf_file, args=(session_id, filepath)).start()
-
+            filepath = os.path.join('./uploads/pdf', filename)
         elif file_extension in ['mp4', 'mov', 'avi', 'mkv']:
-            filepath = os.path.join(app.config['UPLOAD_FOLDER_VIDEO'], filename)
-            os.makedirs(app.config['UPLOAD_FOLDER_VIDEO'], exist_ok=True)
-            file.save(filepath)
-
-            threading.Thread(target=process_video_file, args=(session_id, filepath)).start()
-
+            filepath = os.path.join('./uploads/video', filename)
         else:
-            chat_sessions[session_id]['is_processing'] = False
             return jsonify({'error': 'Unsupported file type'}), 400
 
-        return jsonify({'message': 'File uploaded successfully. Processing...'})
+        # Create the directory if it doesn't exist
+        os.makedirs(os.path.dirname(filepath), exist_ok=True)
+
+        # Simulate saving the file path (no actual file content is saved)
+        # Start a thread for processing based on file type
+        if file_extension == 'pdf':
+            threading.Thread(target=process_pdf_file, args=(session.get('session_id'), filepath)).start()
+        elif file_extension in ['mp4', 'mov', 'avi', 'mkv']:
+            threading.Thread(target=process_video_file, args=(session.get('session_id'), filepath)).start()
+
+        return jsonify({'message': f'Filename "{filename}" processed successfully.', 'path': filepath})
 
     except Exception as e:
-        chat_sessions[session_id]['is_processing'] = False
-        return jsonify({'error': f'Upload failed: {str(e)}'}), 500
+        return jsonify({'error': f'Failed to process filename: {str(e)}'}), 500
 
 
 def process_pdf_file(session_id, filepath):
@@ -310,17 +294,19 @@ def generate_answer(session_id, question):
         # Get response from Ollama
         
         #---------------------- For Local Ollama model
-        # response = ollama.chat(model='hf.co/unsloth/Qwen3-4B-Instruct-2507-GGUF:Q4_K_XL', messages=[
-        #     {'role': 'user', 'content': prompt}
-        # ], think=False)
+        response = ollama.chat(model='gpt-oss:20b-cloud', messages=[
+            {'role': 'user', 'content': prompt}
+        ], think=False)
+        
+        answer = response['message']['content']
         # -------------------------------------------
         
         #---------------------- For Google Gemini model
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",  # or another model name
-            contents=prompt
-        )
-        answer = response.text
+        # response = client.models.generate_content(
+        #     model="gemini-2.5-flash",  # or another model name
+        #     contents=prompt
+        # )
+        # answer = response.text
         # -------------------------------------------
         
         

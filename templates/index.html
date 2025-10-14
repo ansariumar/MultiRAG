@@ -341,6 +341,7 @@
   </div>
 
   <script>
+    
     // --- Helper: parse time strings like HH:MM:SS or MM:SS into seconds ---
     function timeStringToSeconds(str) {
       // allow patterns like 1:23, 01:02:03, 00:05:12, 5m12s, 75s
@@ -391,10 +392,16 @@
       pickFile.addEventListener('click', () => fileInput.click());
       replaceBtn.addEventListener('click', () => fileInput.click());
 
+      let selectedFile = null;
+      var selectedFileClone = null; // to hold a clone for upload
+
       // Show preview of local video if file chosen
       fileInput.addEventListener('change', e => {
         const f = e.target.files && e.target.files[0];
         if (!f) return;
+
+        selectedFile = f;
+        // console.log('Selected file:', f.name, f.size, f.type, f.webkitRelativePath, f.lastModified);
 
         // show filename and size
         currentFilename.textContent = f.name;
@@ -407,10 +414,14 @@
         if (f.type.startsWith('video/')) {
           if (uploadedFileURL) URL.revokeObjectURL(uploadedFileURL);
           uploadedFileURL = URL.createObjectURL(f);
-          videoPlayer.src = uploadedFileURL;
+          videoPlayer.src = uploadedFileURL
+
+          
           videoWrap.setAttribute('aria-hidden', 'false');
           playContextBtn.style.display = 'inline-block';
           videoPlayer.style.display = 'block';
+
+          selectedFileClone = new File([f], f.name, { type: f.type });
         } else {
           // Not a video — hide video player
           videoPlayer.removeAttribute('src');
@@ -424,14 +435,13 @@
       // Submit upload to server
       uploadForm.addEventListener('submit', evt => {
         evt.preventDefault();
-        if (!fileInput.files.length) return alert('Choose a file first');
+        if (!selectedFileClone) return alert('Choose a file first');
 
-
-        const fd = new FormData();
-        fd.append('file', fileInput.files[0]);
+        // const fd = new FormData();
+        // fd.append('file', selectedFileClone); // use the clone
 
         statusText.textContent = 'Uploading...'; statusDot.style.background = '#f9c74f';
-        fetch('/upload', { method: 'POST', body: fd })
+        fetch('/upload', { method: 'POST', body: selectedFile.name })
           .then(r => r.json())
           .then(data => {
             if (data.error) {
@@ -448,7 +458,7 @@
             document.getElementById('replace-btn-mini').addEventListener('click', () => fileInput.click());
 
             // Start polling messages, etc. (reuse existing fetchMessages if server supports)
-            fetchMessages();
+            // fetchMessages();
           })
           .catch(err => { statusText.textContent = 'Upload error'; statusDot.style.background = '#f94144'; console.error(err); alert('Upload error: ' + err) });
       });
@@ -483,69 +493,69 @@
       //     .catch(err => console.error('fetchMessages', err));
       // }
 
-// Define a variable to hold the polling timer ID
-let messagePollTimer; 
+      // Define a variable to hold the polling timer ID
+      let messagePollTimer;
 
-function startPolling() {
-    // Clear any existing timer to prevent duplicates
-    clearTimeout(messagePollTimer);
+      function startPolling() {
+        // Clear any existing timer to prevent duplicates
+        clearTimeout(messagePollTimer);
 
-    function poll() {
-        fetch('/messages')
+        function poll() {
+          fetch('/messages')
             .then(r => r.json())
             .then(data => {
-                if (data.error) {
-                    // ... handle error ...
-                    return; 
+              if (data.error) {
+                // ... handle error ...
+                return;
+              }
+
+              const msgs = data.messages || [];
+              // Check if the number of messages has increased
+              if (msgs.length > previousMessageCount) {
+                // **Rerender all messages when a new one arrives**
+                const oldScrollHeight = chatMessages.scrollHeight;
+                const oldScrollTop = chatMessages.scrollTop;
+
+                // This part is correct: clears and re-renders
+                chatMessages.innerHTML = '';
+                msgs.forEach(m => renderMessage(m.role, m.content));
+
+                // Maintain scroll position
+                if (!userScrolledUp) {
+                  chatMessages.scrollTop = chatMessages.scrollHeight;
+                } else {
+                  chatMessages.scrollTop = oldScrollTop + (chatMessages.scrollHeight - oldScrollHeight);
                 }
 
-                const msgs = data.messages || [];
-                // Check if the number of messages has increased
-                if (msgs.length > previousMessageCount) {
-                    // **Rerender all messages when a new one arrives**
-                    const oldScrollHeight = chatMessages.scrollHeight; 
-                    const oldScrollTop = chatMessages.scrollTop;
+                previousMessageCount = msgs.length;
 
-                    // This part is correct: clears and re-renders
-                    chatMessages.innerHTML = '';
-                    msgs.forEach(m => renderMessage(m.role, m.content));
-                    
-                    // Maintain scroll position
-                    if (!userScrolledUp) {
-                        chatMessages.scrollTop = chatMessages.scrollHeight;
-                    } else {
-                        chatMessages.scrollTop = oldScrollTop + (chatMessages.scrollHeight - oldScrollHeight);
-                    }
-                    
-                    previousMessageCount = msgs.length;
-                    
-                    // Check if the last message is from the assistant (meaning the response is complete)
-                    const lastMessage = msgs[msgs.length - 1];
-                    if (lastMessage.role === 'assistant') {
-                        // The response is complete, STOP POLLING
-                        return; 
-                    }
+                // Check if the last message is from the assistant (meaning the response is complete)
+                const lastMessage = msgs[msgs.length - 1];
+                if (lastMessage.role === 'assistant') {
+                  // The response is complete, STOP POLLING
+                  return;
                 }
-                
-                // If response is not complete, continue polling after a delay
-                messagePollTimer = setTimeout(poll, 1500); // Poll every 1.5 seconds
+              }
+
+              // If response is not complete, continue polling after a delay
+              messagePollTimer = setTimeout(poll, 1500); // Poll every 1.5 seconds
             })
             .catch(err => {
-                console.error('fetchMessages', err);
-                // Continue trying to poll on error (or handle it differently)
-                messagePollTimer = setTimeout(poll, 5000); // Try again in 5 seconds on error
+              console.error('fetchMessages', err);
+              // Continue trying to poll on error (or handle it differently)
+              messagePollTimer = setTimeout(poll, 5000); // Try again in 5 seconds on error
             });
-    }
+        }
 
-    // Start the polling loop
-    poll();
-}
+        // Start the polling loop
+        poll();
+      }
 
 
       // Render a single message — assistant messages are treated as markdown with timestamp linking
       function renderMessage(role, content) {
         // Create container
-        const wrapper = document.createElement('div'); 
+        const wrapper = document.createElement('div');
         wrapper.className = 'message ' + (role === 'user' ? 'user' : 'assistant');
 
         if (role === 'assistant') {
@@ -565,7 +575,16 @@ function startPolling() {
               a.classList.add('timestamp');
               a.setAttribute('role', 'button');
               a.addEventListener('click', function (ev) {
-                ev.preventDefault(); const t = href.replace('timestamp:', ''); const seconds = timeStringToSeconds(t); if (videoPlayer.src && !videoWrap.getAttribute('aria-hidden')) { videoPlayer.currentTime = seconds; videoPlayer.play(); videoPlayer.focus(); } else { // no video: show a small hint
+                ev.preventDefault();
+                const t = href.replace('timestamp:', '');
+                const seconds = timeStringToSeconds(t);
+                console.log(videoPlayer && !videoWrap.getAttribute('aria-hidden'));
+                // videoPlayer && !videoWrap.getAttribute('aria-hidden')
+                if (videoPlayer && videoWrap.getAttribute('aria-hidden') !== 'true') {
+                  videoPlayer.currentTime = seconds;
+                  videoPlayer.play();
+                  videoPlayer.focus();
+                } else { // no video: show a small hint
                   flashNotice('No video loaded. Upload a video to use timestamps.');
                 }
               });
@@ -583,7 +602,7 @@ function startPolling() {
         chatMessages.appendChild(wrapper);
       }
 
-      // Small toast-like notice in the chat area
+      // Small toast-like notice in tfdhe chat area
       let noticeTimeout = null;
       function flashNotice(msg) {
         const n = document.createElement('div'); n.style.cssText = 'position:fixed;right:20px;bottom:20px;padding:10px 14px;background:#111;color:#fff;border-radius:10px;opacity:0.95;z-index:9999'; n.textContent = msg; document.body.appendChild(n);
@@ -613,7 +632,7 @@ function startPolling() {
       setInterval(() => { fetch('/status').then(r => r.json()).then(s => { if (s && s.status) { statusText.textContent = s.status; statusDot.style.background = s.is_processing ? '#f9c74f' : '#4cc9f0' } }).catch(() => { }); }, 2000);
 
       // initial fetch
-      fetchMessages();
+      // fetchMessages();
 
       // Play from first timestamp button: find first timestamp in messages and seek
       playContextBtn.addEventListener('click', () => {
