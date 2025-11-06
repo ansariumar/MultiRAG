@@ -88,10 +88,35 @@
 
     /* main layout: video left, chat right */
     .main-grid {
-      display: grid;
-      grid-template-columns: 2fr 1fr;
+      display: flex;
       gap: 20px;
-      align-items: start
+      align-items: stretch;
+      width: 100%;
+      height: 100%;
+      min-height: 0
+    }
+
+    /* draggable vertical separator */
+    .resizer {
+      width: 6px;
+      cursor: col-resize;
+      background: transparent;
+      border-radius: 3px;
+      align-self: stretch;
+      flex: 0 0 6px;
+      position: relative
+    }
+
+    .resizer:hover::after,
+    .resizer.dragging::after {
+      content: '';
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      left: 2px;
+      right: 2px;
+      background: rgba(67, 97, 238, 0.15);
+      border-radius: 3px
     }
 
     /* Video card */
@@ -102,7 +127,9 @@
       box-shadow: var(--card-shadow);
       display: flex;
       flex-direction: column;
-      gap: 12px
+      gap: 12px;
+      flex: 0 0 66%;
+      min-width: 320px
     }
 
     .video-wrap {
@@ -122,6 +149,26 @@
       height: 100%;
       object-fit: contain;
       background: black
+    }
+
+    /* PDF preview area */
+    .pdf-wrap {
+      position: relative;
+      width: 100%;
+      padding-top: 100%;
+      background: #fff;
+      border-radius: 10px;
+      overflow: hidden
+    }
+
+    .pdf-wrap iframe {
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 100%;
+      height: 100%;
+      border: 0;
+      background: #fff
     }
 
     .video-controls-row {
@@ -160,7 +207,9 @@
       display: flex;
       flex-direction: column;
       height: calc(70vh);
-      min-height: 420px
+      min-height: 420px;
+      flex: 1 1 34%;
+      min-width: 280px
     }
 
     .chat-messages {
@@ -252,12 +301,15 @@
     /* responsive */
     @media(max-width:900px) {
       .main-grid {
-        grid-template-columns: 1fr
+        flex-direction: column
       }
+
+      .resizer { display: none }
 
       .chat-panel {
         height: auto;
-        min-height: 300px
+        min-height: 300px;
+        flex-basis: auto
       }
     }
   </style>
@@ -288,6 +340,9 @@
         <div class="video-wrap" id="video-wrap" aria-hidden="true">
           <video id="video-player" controls preload="metadata"></video>
         </div>
+        <div class="pdf-wrap" id="pdf-wrap" aria-hidden="true" style="display:none">
+          <iframe id="pdf-viewer"></iframe>
+        </div>
 
         <div class="video-controls-row">
           <div class="video-meta">
@@ -306,9 +361,11 @@
           <div id="upload-bar" class="upload-bar">
             <form id="upload-form" enctype="multipart/form-data"
               style="display:flex;gap:8px;align-items:center;width:100%">
-              <input id="file-input" name="file" type="file" accept=".mp4,.mov,.avi,.mkv,.pdf" style="display:none">
+              <input id="file-input" name="file" type="file" accept=".mp4,.mov,.avi,.mkv,.pdf,.jpg,.jpeg,.png,.webp" style="display:none">
               <button type="button" id="pick-file" class="btn-mini">Choose file</button>
-              <small id="upload-hint">PDF or Video (MP4, MOV, AVI, MKV). After upload the chat is active.</small>
+              <small id="upload-hint">
+                PDF, Video and Images.
+              </small>
               <div style="margin-left:auto;display:flex;gap:8px;align-items:center">
                 <button type="submit" class="btn-mini" id="upload-btn">Upload</button>
               </div>
@@ -317,7 +374,7 @@
         </div>
 
       </div>
-
+      <div class="resizer" id="grid-resizer" aria-label="Resize panels" role="separator" aria-orientation="vertical" tabindex="0"></div>
       <!-- CHAT AREA -->
       <aside class="chat-panel">
         <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:6px">
@@ -379,12 +436,18 @@
       const fileSizeEl = document.getElementById('file-size');
       const videoWrap = document.getElementById('video-wrap');
       const videoPlayer = document.getElementById('video-player');
+      const pdfWrap = document.getElementById('pdf-wrap');
+      const pdfViewer = document.getElementById('pdf-viewer');
       const chatMessages = document.getElementById('chat-messages');
       const questionForm = document.getElementById('question-form');
       const questionInput = document.getElementById('question-input');
       const playContextBtn = document.getElementById('play-context');
       const statusText = document.getElementById('status-text');
       const statusDot = document.getElementById('status-dot');
+      const mainGrid = document.querySelector('.main-grid');
+      const resizer = document.getElementById('grid-resizer');
+      const leftPane = document.querySelector('.video-card');
+      const rightPane = document.querySelector('.chat-panel');
 
       let uploadedFileURL = null; // object URL for preview
 
@@ -392,8 +455,102 @@
       pickFile.addEventListener('click', () => fileInput.click());
       replaceBtn.addEventListener('click', () => fileInput.click());
 
+      // --- Resizable columns (video-card <-> chat-panel) ---
+      (function enableColumnResize() {
+        if (!resizer || !mainGrid || !leftPane || !rightPane) return;
+        let dragging = false;
+        let startX = 0;
+        let startLeftWidth = 0;
+
+        function getGap() {
+          const cs = getComputedStyle(mainGrid);
+          const gap = parseFloat(cs.gap || '0');
+          return isNaN(gap) ? 0 : gap;
+        }
+
+        function onPointerDown(clientX) {
+          const rect = mainGrid.getBoundingClientRect();
+          dragging = true;
+          startX = clientX;
+          startLeftWidth = leftPane.getBoundingClientRect().width;
+          resizer.classList.add('dragging');
+          document.body.style.userSelect = 'none';
+        }
+
+        function onPointerMove(clientX) {
+          if (!dragging) return;
+          const rect = mainGrid.getBoundingClientRect();
+          const dx = clientX - startX;
+          const resizerWidth = resizer.offsetWidth || 6;
+          const gap = getGap();
+          const totalWidth = rect.width;
+
+          let newLeft = startLeftWidth + dx;
+          const minLeft = 320; // match CSS min-width
+          const minRight = 280; // match CSS min-width
+
+          // Ensure right pane stays >= minRight
+          const maxLeft = totalWidth - resizerWidth - (gap * 2) - minRight;
+          newLeft = Math.max(minLeft, Math.min(maxLeft, newLeft));
+
+          leftPane.style.flex = `0 0 ${newLeft}px`;
+          rightPane.style.flex = '1 1 auto';
+        }
+
+        function onPointerUp() {
+          if (!dragging) return;
+          dragging = false;
+          resizer.classList.remove('dragging');
+          document.body.style.userSelect = '';
+        }
+
+        // Mouse
+        resizer.addEventListener('mousedown', (e) => {
+          onPointerDown(e.clientX);
+          window.addEventListener('mousemove', mouseMove);
+          window.addEventListener('mouseup', mouseUp);
+        });
+        function mouseMove(e) { onPointerMove(e.clientX); }
+        function mouseUp() {
+          window.removeEventListener('mousemove', mouseMove);
+          window.removeEventListener('mouseup', mouseUp);
+          onPointerUp();
+        }
+
+        // Touch
+        resizer.addEventListener('touchstart', (e) => {
+          const t = e.touches && e.touches[0];
+          if (!t) return;
+          onPointerDown(t.clientX);
+          window.addEventListener('touchmove', touchMove, { passive: false });
+          window.addEventListener('touchend', touchUp);
+          window.addEventListener('touchcancel', touchUp);
+        });
+        function touchMove(e) { const t = e.touches && e.touches[0]; if (!t) return; e.preventDefault(); onPointerMove(t.clientX); }
+        function touchUp() {
+          window.removeEventListener('touchmove', touchMove);
+          window.removeEventListener('touchend', touchUp);
+          window.removeEventListener('touchcancel', touchUp);
+          onPointerUp();
+        }
+
+        // Keyboard accessibility (left/right arrows)
+        resizer.addEventListener('keydown', (e) => {
+          const step = (e.shiftKey ? 40 : 10);
+          if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+            const current = leftPane.getBoundingClientRect().width;
+            const delta = e.key === 'ArrowLeft' ? -step : step;
+            onPointerDown(0);
+            startLeftWidth = current;
+            onPointerMove(delta);
+            onPointerUp();
+            e.preventDefault();
+          }
+        });
+      })();
+
       let selectedFile = null;
-      var selectedFileClone = null; // to hold a clone for upload
+      // var selectedFileClone = null; // to hold a clone for upload
 
       // Show preview of local video if file chosen
       fileInput.addEventListener('change', e => {
@@ -421,13 +578,40 @@
           playContextBtn.style.display = 'inline-block';
           videoPlayer.style.display = 'block';
 
-          selectedFileClone = new File([f], f.name, { type: f.type });
-        } else {
-          // Not a video — hide video player
+          // hide pdf preview
+          if (pdfViewer) {
+            pdfViewer.removeAttribute('src');
+          }
+          pdfWrap.setAttribute('aria-hidden', 'true');
+          pdfWrap.style.display = 'none';
+
+          // selectedFileClone = new File([f], f.name, { type: f.type });
+        } else if (f.type === 'application/pdf') {
+          // PDF preview
+          videoWrap.style.display = 'none';
+
+          if (uploadedFileURL) URL.revokeObjectURL(uploadedFileURL);
+          uploadedFileURL = URL.createObjectURL(f);
+          pdfViewer.src = uploadedFileURL;
+
+          // show pdf, hide video
+          pdfWrap.setAttribute('aria-hidden', 'false');
+          pdfWrap.style.display = 'block';
           videoPlayer.removeAttribute('src');
           videoPlayer.load && videoPlayer.load();
           videoWrap.setAttribute('aria-hidden', 'true');
           playContextBtn.style.display = 'none';
+        } else {
+          // Not video or pdf — hide both
+          videoPlayer.removeAttribute('src');
+          videoPlayer.load && videoPlayer.load();
+          videoWrap.setAttribute('aria-hidden', 'true');
+          playContextBtn.style.display = 'none';
+          if (pdfViewer) {
+            pdfViewer.removeAttribute('src');
+          }
+          pdfWrap.setAttribute('aria-hidden', 'true');
+          pdfWrap.style.display = 'none';
         }
 
       });
@@ -435,7 +619,7 @@
       // Submit upload to server
       uploadForm.addEventListener('submit', evt => {
         evt.preventDefault();
-        if (!selectedFileClone) return alert('Choose a file first');
+        // if (!selectedFileClone) return alert('Choose a file first');
 
         // const fd = new FormData();
         // fd.append('file', selectedFileClone); // use the clone
@@ -472,26 +656,7 @@
         userScrolledUp = !isAtBottom;
       });
 
-      // function fetchMessages() {
-      //   fetch('/messages')
-      //     .then(r => r.json())
-      //     .then(data => {
-      //       console.log('Messages data:', data); //<----------------------------------
 
-      //       if (data.error) return console.error(data.error);
-      //       const msgs = data.messages || [];
-      //       if (msgs.length === 0) { chatMessages.innerHTML = '<div class="empty">No messages yet. Ask questions after upload.</div>'; previousMessageCount = 0; return; }
-
-      //       if (msgs.length !== previousMessageCount) {
-      //         const oldScrollHeight = chatMessages.scrollHeight; const oldScrollTop = chatMessages.scrollTop;
-      //         chatMessages.innerHTML = '';
-      //         msgs.forEach(m => renderMessage(m.role, m.content));
-      //         if (!userScrolledUp) chatMessages.scrollTop = chatMessages.scrollHeight; else chatMessages.scrollTop = oldScrollTop + (chatMessages.scrollHeight - oldScrollHeight);
-      //         previousMessageCount = msgs.length;
-      //       }
-      //     })
-      //     .catch(err => console.error('fetchMessages', err));
-      // }
 
       // Define a variable to hold the polling timer ID
       let messagePollTimer;

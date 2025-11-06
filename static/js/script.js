@@ -40,8 +40,48 @@ document.addEventListener('DOMContentLoaded', () => {
     const playContextBtn = document.getElementById('play-context');
     const statusText = document.getElementById('status-text');
     const statusDot = document.getElementById('status-dot');
+    const mainGrid = document.querySelector('.main-grid');
+    const toggleLayoutBtn = document.getElementById('toggle-layout-btn');
+    const layoutIcons = {
+        'default': toggleLayoutBtn.querySelector('.icon-view-default'),
+        'chat-focus': toggleLayoutBtn.querySelector('.icon-view-chat-focus'),
+        'stacked': toggleLayoutBtn.querySelector('.icon-view-stacked')
+    };
 
     let uploadedFileURL = null; // object URL for preview
+
+    // Layout switcher
+    const layouts = ['default', 'chat-focus', 'stacked'];
+    let currentLayoutIndex = 0;
+
+    function updateLayout() {
+        const newLayout = layouts[currentLayoutIndex];
+        mainGrid.classList.remove('chat-focus', 'stacked');
+        if (newLayout === 'chat-focus') {
+            mainGrid.classList.add('chat-focus');
+        } else if (newLayout === 'stacked') {
+            mainGrid.classList.add('stacked');
+        }
+
+        // Update icon visibility
+        Object.values(layoutIcons).forEach(icon => icon.style.display = 'none');
+        const nextLayout = layouts[(currentLayoutIndex + 1) % layouts.length];
+        if (layoutIcons[nextLayout]) {
+            layoutIcons[nextLayout].style.display = 'block';
+        } else {
+            layoutIcons['default'].style.display = 'block';
+        }
+        toggleLayoutBtn.title = `Switch to ${nextLayout.replace('-', ' ')} view`;
+    }
+
+    toggleLayoutBtn.addEventListener('click', () => {
+        currentLayoutIndex = (currentLayoutIndex + 1) % layouts.length;
+        updateLayout();
+    });
+    
+    // Set initial icon
+    updateLayout();
+
 
     // When user clicks choose file
     pickFile.addEventListener('click', () => fileInput.click());

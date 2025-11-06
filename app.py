@@ -4,8 +4,8 @@ import threading
 import re
 from flask import Flask, render_template, request, jsonify, session, send_from_directory
 from werkzeug.utils import secure_filename
-from utils.file_processor import process_pdf, extract_audio_from_video
-from utils.whisper_transcribe import transcribe_audio, retrival
+from utils.file_processor import process_pdf, extract_audio_from_video, retriverPDF
+from utils.whisper_transcribe import transcribe_audio, retriverVideo
 import ollama
 from dotenv import load_dotenv
 from google import genai
@@ -22,6 +22,7 @@ app.config.from_pyfile('config.py')
 # Global variable to track processing status
 processing_status = {}
 chat_sessions = {}
+Global_fileType = None
 
 def format_chat_history(messages, max_pairs=2):
     """
@@ -142,13 +143,23 @@ def upload_file():
 
         # Determine the file path based on the extension
         file_extension = filename.rsplit('.', 1)[1].lower()
+        print("file_extension", file_extension)
         if file_extension == 'pdf':
+            Global_fileType = 'pdf'
+            print("Global_fileType", Global_fileType)
             filepath = os.path.join('./uploads/pdf', filename)
         elif file_extension in ['mp4', 'mov', 'avi', 'mkv']:
+            Global_fileType = 'video'
             filepath = os.path.join('./uploads/video', filename)
+        elif file_extension in ['jpg', 'jpeg', 'png', 'webp']:
+            Global_fileType = 'image'
+            filepath = os.path.join('./uploads/image', filename)
         else:
             return jsonify({'error': 'Unsupported file type'}), 400
 
+        # print("new file type is", Global_fileType)
+
+        chat_sessions[session.get('session_id')]['file_type'] = Global_fileType
         # Create the directory if it doesn't exist
         os.makedirs(os.path.dirname(filepath), exist_ok=True)
 
@@ -162,7 +173,7 @@ def upload_file():
         return jsonify({'message': f'Filename "{filename}" processed successfully.', 'path': filepath})
 
     except Exception as e:
-        return jsonify({'error': f'Failed to process filename: {str(e)}'}), 500
+        return jsonify({'error': f'Failed to process filename: {str(e.__traceback__)}'}), 500
 
 
 def process_pdf_file(session_id, filepath):
@@ -244,11 +255,18 @@ def ask_question():
 
 def generate_answer(session_id, question):
     try:
-        
+        Global_fileType = chat_sessions[session_id]['file_type']
+        print("here generate_answer", Global_fileType)
         # the extracted text is array of objects, each object having two elements "timestamp" and "text", eg [{timestamp:(), text:""}, {}...]
         # extracted_text:list = chat_sessions[session_id]['extracted_chunk']
-        retrived_text = retrival(question)
+        if Global_fileType == 'video':
+            print("here video", Global_fileType)
+            retrived_text = retriverVideo(question)
+        elif Global_fileType == 'pdf':
+            print("here pdf", Global_fileType)
+            retrived_text = retriverPDF(question)
         print(chat_sessions)
+        
         
         
         # print("##################################################################")
@@ -264,8 +282,9 @@ def generate_answer(session_id, question):
         print("Transcript saved to transcript.txt")
         
         # Prepare prompt for the AI model with chat history
-        prompt = f"""
-        You are a friendly, expert educational assistant. Your primary goal is to help the user learn and understand the subject matter.
+        if Global_fileType == 'video':
+            prompt = f"""
+        You are a friendly, expert educational assistant. Your primary goal is to help the user learn and understand the subject matter. You have been given a Video Transcript and a Image. Use the transcript.
 
         Guidelines:
         - Read and properly analyse the `USER'S QUESTION`.
@@ -284,7 +303,31 @@ def generate_answer(session_id, question):
         {retrived_text}
 
         Answer:"""
+
+        elif Global_fileType == 'pdf':
+            prompt = f"""
+            You are a friendly, expert educational assistant. Your primary goal is to help the user learn and understand the subject matter. You have been given a PDF's Text . Use the PDF to answer the question.
+
+            Guidelines:
+            - Read and properly analyse the `USER'S QUESTION`.
+            - Prioritize Extracted Context: Your answer MUST be based on the provided `EXTRACTED TEXT` and `CONVERSATION HISTORY`. If the context contains a direct answer, use it and cite the page numbers if possible(small unassuming page numbers).
+            - Go Beyond for Clarity: If the user asks for a simplification ("explain in easy English," "give an example") or asks a related general knowledge question that is not fully covered in the provided context, you may use your general knowledge to provide a helpful, simple, and complete answer.  
+            - Be honest when information is insufficient or missing
+            - Provide clear, helpful responses in a conversational tone
+
+            CONVERSATION HISTORY:
+            {chat_history_str}
+
+            USER'S QUESTION: {question}
+            EXTRACTED TEXT:
+            {retrived_text}
+
+            Answer:"""
         
+        else:
+            processing_status[session_id] = "Error: Unsupported file type"
+            return jsonify({'error': 'Unsupported file type'}), 400
+
         print("##################################################################")
         # print("The Chat history so far is: " + chat_history_str)
         print("##################################################################")
@@ -296,7 +339,7 @@ def generate_answer(session_id, question):
         #---------------------- For Local Ollama model
         response = ollama.chat(model='gpt-oss:20b-cloud', messages=[
             {'role': 'user', 'content': prompt}
-        ], think=False)
+        ], think='low')
         
         answer = response['message']['content']
         # -------------------------------------------
@@ -343,7 +386,7 @@ def generate_answer(session_id, question):
         # Add error message to chat history
         chat_sessions[session_id]['messages'].append({
             'role': 'assistant',
-            'content': f"Sorry, I encountered an error while processing your question: {str(e)}"
+            'content': f"Sorry, I encountered an error while processing your question: {str(e)} \n Err"
         })
         
     finally:

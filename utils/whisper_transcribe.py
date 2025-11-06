@@ -1,5 +1,6 @@
 # import whisper
 import torch
+import gc
 from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
 import sys
 import os
@@ -103,8 +104,20 @@ def transcribe_audio(audio_path):
     # print(f"\033[92m Transcribing audio... \033[0m")
         
     # result:dict = pipe(f"./{audio_path}")
-        
+
+    # del pipe
+    # del model
+    # del processor
+
+    # if torch.cuda.is_available:
+    #     torch.cuda.empty_cache
+    #     torch.cuda.ipc_collect
+    
+    # gc.collect
+    
     result = text
+
+
         
     print(result[0])
         
@@ -141,9 +154,9 @@ def store_in_DB(chunk:dict):
     except Exception as e:
         print(f"Error storing data in DB: {e}")
 
-def retrival(query:str) -> list[str]:
+def retriverVideo(query:str) -> list[str]:
     try:
-        results = collection.query(
+        results = collection.query(             #results is a very big variable and complex structure so in the below code we format it cleanly.
             query_texts=[query],
             n_results=10
         )
