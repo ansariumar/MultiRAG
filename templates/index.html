@@ -774,30 +774,106 @@
         clearTimeout(noticeTimeout); noticeTimeout = setTimeout(() => { n.remove(); }, 2600);
       }
 
+      // --- Streaming helpers ---
+      let currentEventSource = null;
+
+      function closeCurrentStream() {
+        if (currentEventSource) {
+          try { currentEventSource.close(); } catch (e) {}
+          currentEventSource = null;
+        }
+      }
+
+      function startAssistantStream(targetWrapper, onDone) {
+        closeCurrentStream();
+        // SSE endpoint
+        const es = new EventSource('/messages?stream=1');
+        currentEventSource = es;
+        let accumulated = '';
+
+        es.onmessage = (evt) => {
+          try {
+            const payload = JSON.parse(evt.data || '{}');
+            if (payload.type === 'delta') {
+              accumulated += payload.delta || '';
+            } else if (payload.type === 'thinking') {
+              // optional: ignore or show a subtle indicator
+              return;
+            } else if (payload.type === 'done') {
+              es.close();
+              currentEventSource = null;
+              if (typeof onDone === 'function') onDone();
+            } else {
+              return;
+            }
+
+            // Re-render assistant content with markdown + timestamp link handling
+            const timestampRegex = /(?<!\()\b(\d{1,2}:\d{2}:\d{2}|\d{1,2}:\d{2})\b/g;
+            const preProcessed = accumulated.replace(timestampRegex, function (match) { return `[${match}](timestamp:${match})`; });
+            const html = marked.parse(preProcessed);
+            targetWrapper.innerHTML = html;
+
+            // Attach timestamp link handlers
+            targetWrapper.querySelectorAll('a').forEach(a => {
+              const href = a.getAttribute('href') || '';
+              if (href.startsWith('timestamp:')) {
+                a.classList.add('timestamp');
+                a.setAttribute('role', 'button');
+                a.addEventListener('click', function (ev) {
+                  ev.preventDefault();
+                  const t = href.replace('timestamp:', '');
+                  const seconds = timeStringToSeconds(t);
+                  if (videoPlayer && videoWrap.getAttribute('aria-hidden') !== 'true') {
+                    videoPlayer.currentTime = seconds;
+                    videoPlayer.play();
+                    videoPlayer.focus();
+                  } else {
+                    flashNotice('No video loaded. Upload a video to use timestamps.');
+                  }
+                });
+              }
+            });
+
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+          } catch (e) {
+            // ignore malformed events
+          }
+        };
+
+        es.onerror = () => {
+          // auto-close on error
+          try { es.close(); } catch (e) {}
+          currentEventSource = null;
+        };
+      }
+
       // handle ask question
       questionForm.addEventListener('submit', e => {
         e.preventDefault(); const q = questionInput.value && questionInput.value.trim(); if (!q) return;
         renderMessage('user', q); questionInput.value = ''; chatMessages.scrollTop = chatMessages.scrollHeight;
-        // show typing indicator
-        const typing = document.createElement('div'); typing.className = 'message'; typing.textContent = 'Assistant is typing...'; chatMessages.appendChild(typing); chatMessages.scrollTop = chatMessages.scrollHeight;
 
+        // Create assistant placeholder (will be progressively filled)
+        const assistantWrapper = document.createElement('div');
+        assistantWrapper.className = 'message assistant';
+        assistantWrapper.textContent = '…';
+        chatMessages.appendChild(assistantWrapper);
+        chatMessages.scrollTop = chatMessages.scrollHeight;
+
+        // Fire the ask request (starts generation server-side)
         fetch('/ask', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ question: q }) })
           .then(r => r.json())
           .then(data => {
-            typing.remove(); if (data.error) { renderMessage('assistant', 'Error: ' + data.error); return; }
-            console.log('Ask response:  ', data); //<----------------------------------
-            // backend will likely start processing; we will start polling for messages
-            // fetchMessages();
-            startPolling();
+            if (data.error) { assistantWrapper.textContent = 'Error: ' + data.error; return; }
+            // Start streaming the response to update assistantWrapper
+            startAssistantStream(assistantWrapper, () => { /* done */ });
           })
-          .catch(err => { typing.remove(); renderMessage('assistant', 'Error: ' + err); });
+          .catch(err => { assistantWrapper.textContent = 'Error: ' + err; });
       });
 
       // Periodically poll status (like your original script)
       setInterval(() => { fetch('/status').then(r => r.json()).then(s => { if (s && s.status) { statusText.textContent = s.status; statusDot.style.background = s.is_processing ? '#f9c74f' : '#4cc9f0' } }).catch(() => { }); }, 2000);
 
-      // initial fetch
-      // fetchMessages();
+      // Disable old polling flow; streaming will update messages
 
       // Play from first timestamp button: find first timestamp in messages and seek
       playContextBtn.addEventListener('click', () => {

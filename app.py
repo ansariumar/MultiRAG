@@ -2,7 +2,7 @@ import os
 import uuid
 import threading
 import re
-from flask import Flask, render_template, request, jsonify, session, send_from_directory
+from flask import Flask, render_template, request, jsonify, session, send_from_directory, Response, stream_with_context
 from werkzeug.utils import secure_filename
 from utils.file_processor import process_pdf, extract_audio_from_video, retriverPDF
 from utils.whisper_transcribe import transcribe_audio, retriverVideo
@@ -10,6 +10,8 @@ import ollama
 from dotenv import load_dotenv
 from google import genai
 import requests
+import json
+from queue import Queue
 
 load_dotenv() 
 
@@ -61,7 +63,8 @@ def index():
         chat_sessions[session_id] = {
             'messages': [],
             'extracted_text': '',
-            'is_processing': False
+            'is_processing': False,
+            'listeners': []  # SSE listener queues
         }
     return render_template('index.html')
 
@@ -336,12 +339,47 @@ def generate_answer(session_id, question):
         #     f.write(str(extracted_text))
         # Get response from Ollama
         
-        #---------------------- For Local Ollama model
-        response = ollama.chat(model='gpt-oss:20b-cloud', messages=[
-            {'role': 'user', 'content': prompt}
-        ], think='low')
-        
-        answer = response['message']['content']
+        #---------------------- For Local Ollama model (streaming)
+        def broadcast_to_listeners(payload: dict):
+            listeners = chat_sessions.get(session_id, {}).get('listeners', [])
+            if not listeners:
+                return
+            data = json.dumps(payload, ensure_ascii=False)
+            for q in list(listeners):
+                try:
+                    q.put_nowait(data)
+                except Exception:
+                    # best-effort; drop if full
+                    pass
+
+        accumulated_thinking = ''
+        accumulated_content = ''
+
+        stream = ollama.chat(
+            model='gpt-oss:20b-cloud',
+            messages=[{'role': 'user', 'content': prompt}],
+            stream=True,
+            think='low',
+        )
+
+        in_thinking = False
+        for chunk in stream:
+            # The python client exposes chunk.message.thinking/content
+            thinking_part = getattr(chunk.message, 'thinking', None)
+            content_part = getattr(chunk.message, 'content', None)
+
+            if thinking_part:
+                in_thinking = True
+                accumulated_thinking += thinking_part
+                broadcast_to_listeners({'type': 'thinking', 'delta': thinking_part})
+            elif content_part:
+                if in_thinking:
+                    in_thinking = False
+                accumulated_content += content_part
+                broadcast_to_listeners({'type': 'delta', 'delta': content_part})
+
+        answer = accumulated_content
+        broadcast_to_listeners({'type': 'done'})
         # -------------------------------------------
         
         #---------------------- For Google Gemini model
@@ -411,7 +449,31 @@ def get_messages():
     session_id = session.get('session_id')
     if not session_id or session_id not in chat_sessions:
         return jsonify({'error': 'Session expired'}), 400
-    
+
+    # If stream=1, return Server-Sent Events stream of assistant deltas
+    if request.args.get('stream') == '1':
+        client_queue = Queue(maxsize=1024)
+        chat_sessions[session_id]['listeners'].append(client_queue)
+
+        def event_stream():
+            try:
+                # send a hello event so client can attach
+                yield f"data: {json.dumps({'type': 'ready'})}\n\n"
+                while True:
+                    data = client_queue.get()
+                    yield f"data: {data}\n\n"
+            except GeneratorExit:
+                pass
+            finally:
+                # cleanup listener
+                try:
+                    chat_sessions[session_id]['listeners'].remove(client_queue)
+                except ValueError:
+                    pass
+
+        return Response(stream_with_context(event_stream()), mimetype='text/event-stream')
+
+    # Default: return the whole messages history (non-streaming)
     return jsonify({
         'messages': chat_sessions[session_id]['messages']
     })
